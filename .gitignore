@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Modèles Whisper (fichiers volumineux — à télécharger séparément)
+*.bin
+
+# Audio
+*.wav
+*.mp3
+*.ogg
+
+# Rust
+/target
+
+# Logs
+*.log
