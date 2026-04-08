@@ -3,21 +3,21 @@ name = "warroom-scribe"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-# Framework de commandes slash — branche serenity-next (utilise serenity git/next en transitif)
-# On ne déclare PAS serenity directement : poise l'apporte, et le fork songbird aussi,
-# tous deux depuis la même branche "next" → cargo les unifie au même commit.
-poise = { git = "https://github.com/serenity-rs/poise", branch = "serenity-next" }
+[features]
+# Activer sur la machine de prod avec RTX A2000 : cargo build --release --features cuda
+cuda = ["whisper-rs/cuda"]
 
-# Voice avec support DAVE/E2EE intégré (fork de tazz4843, basé sur scripty-bot)
-songbird = { git = "https://github.com/tazz4843/songbird", rev = "857c3fa", features = [
+[dependencies]
+# Framework de commandes slash (stable, serenity 0.12)
+poise = "0.6.1"
+
+# Voice avec support DAVE/E2EE — fork local de serenity-rs/songbird v0.6.0 patché
+# pour corriger le mapping SSRC→user_id (opcode 12 ClientConnect ignoré par défaut)
+songbird = { path = "../songbird", features = [
     "driver",
     "receive",  # Activer la réception audio (VoiceTick events)
     "serenity", # Intégration avec serenity (SerenityInit trait)
 ] }
-
-# Protocole DAVE/MLS — chiffrement E2EE Discord (utilisé par songbird en interne)
-davey = "0.1"
 
 # Runtime async (équivalent de asyncio en Python)
 tokio = { version = "1", features = ["full"] }
@@ -33,7 +33,8 @@ serde_json = "1"
 dotenvy = "0.15"
 
 # Transcription Whisper locale (wrape whisper.cpp — nécessite cmake)
-whisper-rs = { version = "0.13", features = ["whisper-cpp-tracing", "cuda"] }
+# Feature "cuda" activé séparément sur la machine de prod (RTX A2000)
+whisper-rs = { version = "0.13", features = ["whisper-cpp-tracing"] }
 
 # Logging structuré (équivalent de logging en Python)
 tracing = "0.1"
@@ -43,7 +44,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
 chrono-tz = "0.10"
 
-# Requis pour appeler install_default() et résoudre l'ambiguïté aws-lc-rs vs ring
+# Requis pour résoudre l'ambiguïté aws-lc-rs vs ring
 rustls = { version = "0.23", features = ["ring"], default-features = false }
 
 # HashMap concurrent thread-safe (pour les buffers audio)

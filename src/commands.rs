@@ -53,33 +53,38 @@ pub async fn start(
     }
 
     // Trouver le voice channel et les noms des membres depuis le cache serenity
-    // ExtractMap (serenity-next) utilise .iter() et non .values()
+    // serenity 0.12 : voice_states et members sont des HashMap → iter() retourne des (&key, &val)
     let (voice_channel_id, initial_user_names): (Option<serenity::ChannelId>, HashMap<u64, String>) = {
         let guild = ctx.guild().ok_or("Guild non trouvé dans le cache")?;
+        let author_id = ctx.author().id;
         let channel_id = guild
             .voice_states
-            .iter()  // iter() retourne des &VoiceState (pas de key dans ExtractMap)
-            .find(|vs| vs.user_id == ctx.author().id)
+            .get(&author_id)
             .and_then(|vs| vs.channel_id);
 
-        let names: HashMap<u64, String> = if let Some(cid) = channel_id {
-            guild
-                .voice_states
-                .iter()
-                .filter(|vs| vs.channel_id == Some(cid))
-                .filter_map(|vs| {
-                    guild
-                        .members
-                        .get(&vs.user_id)
-                        .map(|m| (vs.user_id.get(), m.display_name().to_string()))
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        // Membres depuis le cache (disponible immédiatement, peut être incomplet)
+        let names_from_cache: HashMap<u64, String> = guild
+            .members
+            .iter()
+            .map(|(id, member)| (id.get(), member.display_name().to_string()))
+            .collect();
 
-        (channel_id, names)
+        (channel_id, names_from_cache)
     };
+
+    // Compléter avec l'API HTTP pour les membres absents du cache
+    let mut initial_user_names = initial_user_names;
+    match ctx.http().get_guild_members(guild_id, None, None).await {
+        Ok(members) => {
+            for member in members {
+                initial_user_names
+                    .entry(member.user.id.get())
+                    .or_insert_with(|| member.display_name().to_string());
+            }
+            tracing::info!("{} membre(s) chargés pour la session", initial_user_names.len());
+        }
+        Err(e) => tracing::warn!("Impossible de fetcher les membres via HTTP : {e}"),
+    }
 
     let Some(channel_id) = voice_channel_id else {
         ctx.say("Tu dois être dans un channel vocal pour démarrer l'enregistrement.")
@@ -95,10 +100,10 @@ pub async fn start(
         .and_then(|v| v.parse().ok())
         .unwrap_or(300);
 
-    // Nom du channel vocal (depuis le cache guild — serenity-next n'a plus to_channel())
+    // Nom du channel vocal (depuis le cache guild)
     let channel_name = ctx
         .guild()
-        .and_then(|g| g.channels.get(&channel_id).map(|c| c.base.name.to_string()))
+        .and_then(|g| g.channels.get(&channel_id).map(|c| c.name.clone()))
         .unwrap_or_else(|| channel_id.get().to_string());
 
     // Répondre immédiatement à l'interaction (évite ctx.defer() qui efface les commandes guild)

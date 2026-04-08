@@ -202,8 +202,9 @@ impl RecordingSession {
         inner.audio_buffers.entry(user_id).or_default().extend_from_slice(samples);
 
         // Enregistrer le premier timestamp de parole dans ce batch (pour corriger les timestamps Whisper)
+        let batch_start = inner.batch_start;
         inner.audio_start_offsets.entry(user_id).or_insert_with(|| {
-            (Utc::now() - inner.batch_start).num_milliseconds() as f64 / 1000.0
+            (Utc::now() - batch_start).num_milliseconds() as f64 / 1000.0
         });
     }
 
