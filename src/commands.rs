@@ -110,20 +110,9 @@ pub async fn start(
     ctx.say(format!(":hourglass: Connexion à **{channel_name}** en cours..."))
         .await?;
 
-    // Connexion au voice channel via Songbird
-    let call_lock = match data.songbird.join(guild_id, channel_id).await {
-        Ok(call) => call,
-        Err(e) => {
-            ctx.say(format!(
-                ":x: Impossible de rejoindre le channel vocal : `{e}`\n\
-                 Si tu vois `4017`, Discord requiert le protocole DAVE E2EE."
-            ))
-            .await?;
-            return Ok(());
-        }
-    };
-
-    // Créer le thread Slack d'ouverture
+    // Créer le thread Slack d'ouverture avant le join — on a besoin du thread_ts pour la session,
+    // et la session doit exister avant le join pour que le handler soit prêt quand
+    // Discord envoie les ClientConnect (race condition sinon).
     let now_local = chrono::Utc::now().with_timezone(&chrono_tz::America::Montreal);
     let now_fmt = now_local.format("%Y-%m-%d %H:%M %Z");
     let thread_ts = slack::create_thread(
@@ -136,7 +125,9 @@ pub async fn start(
     )
     .await?;
 
-    // Créer la session d'enregistrement
+    // Créer la session et enregistrer le handler AVANT le join.
+    // Discord envoie les ClientConnect (SSRC→user_id) pendant la connexion initiale.
+    // Si le handler n'est pas enregistré à ce moment, les SpeakingStateUpdate sont perdus.
     let session = Arc::new(RecordingSession::new(
         guild_id,
         channel_name.clone(),
@@ -146,13 +137,24 @@ pub async fn start(
         initial_user_names,
     ));
 
-    // Enregistrer le handler audio dans Songbird
+    let call_lock = data.songbird.get_or_insert(guild_id);
     {
         let mut call = call_lock.lock().await;
         let handler = Handler::new(Arc::clone(&session));
         call.add_global_event(CoreEvent::VoiceTick.into(), handler.clone());
         call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), handler.clone());
         call.add_global_event(CoreEvent::ClientDisconnect.into(), handler);
+    }
+
+    // Maintenant on joint — le handler est déjà en place pour recevoir les ClientConnect
+    if let Err(e) = call_lock.lock().await.join(channel_id).await {
+        ctx.say(format!(
+            ":x: Impossible de rejoindre le channel vocal : `{e}`\n\
+             Si tu vois `4017`, Discord requiert le protocole DAVE E2EE."
+        ))
+        .await?;
+        data.songbird.remove(guild_id).await.ok();
+        return Ok(());
     }
 
     session.start().await;
