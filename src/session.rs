@@ -32,6 +32,7 @@ pub struct Segment {
 struct SessionInner {
     /// Buffers audio par userId (PCM i16, 48kHz, stéréo)
     /// HashMap<user_id, Vec<i16>> — s'accumule entre les flushes
+    /// Les silences entre les interventions sont insérés pour préserver les timestamps Whisper.
     audio_buffers: HashMap<u64, Vec<i16>>,
 
     /// Mapping SSRC (identifiant audio Discord) → user_id Discord
@@ -56,6 +57,9 @@ struct SessionInner {
     /// Offset en secondes depuis batch_start pour le premier audio de chaque user dans ce batch
     /// Utilisé pour corriger les timestamps Whisper (chaque buffer est compressé sans silences)
     audio_start_offsets: HashMap<u64, f64>,
+
+    /// Timestamp du dernier audio reçu par user (pour insérer les silences inter-interventions)
+    last_audio_time: HashMap<u64, DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +110,7 @@ impl RecordingSession {
                 batch_start: now,
                 placeholder_ids: HashSet::new(),
                 audio_start_offsets: HashMap::new(),
+                last_audio_time: HashMap::new(),
             }),
             flush_task: Mutex::new(None),
             flush_stop_tx: Mutex::new(None),
@@ -199,13 +204,29 @@ impl RecordingSession {
                 }
             }
         };
-        inner.audio_buffers.entry(user_id).or_default().extend_from_slice(samples);
+        let now = Utc::now();
 
         // Enregistrer le premier timestamp de parole dans ce batch (pour corriger les timestamps Whisper)
         let batch_start = inner.batch_start;
         inner.audio_start_offsets.entry(user_id).or_insert_with(|| {
-            (Utc::now() - batch_start).num_milliseconds() as f64 / 1000.0
+            (now - batch_start).num_milliseconds() as f64 / 1000.0
         });
+
+        // Insérer du silence pour les gaps entre interventions.
+        // Sans ça, Whisper compresse tout le buffer sans silences → timestamps décalés.
+        // 48kHz stéréo : 2 samples × 48 000 Hz = 96 000 samples/s
+        const SAMPLES_PER_MS: usize = 96; // 48kHz × 2 canaux = 96 samples/ms
+        const GAP_THRESHOLD_MS: i64 = 200; // gap < 200ms = considered continuous speech
+        if let Some(&last_time) = inner.last_audio_time.get(&user_id) {
+            let gap_ms = (now - last_time).num_milliseconds();
+            if gap_ms > GAP_THRESHOLD_MS {
+                let silence_len = (gap_ms as usize).saturating_sub(GAP_THRESHOLD_MS as usize) * SAMPLES_PER_MS;
+                let buf = inner.audio_buffers.entry(user_id).or_default();
+                buf.extend(std::iter::repeat(0i16).take(silence_len));
+            }
+        }
+        inner.last_audio_time.insert(user_id, now);
+        inner.audio_buffers.entry(user_id).or_default().extend_from_slice(samples);
     }
 
     /// Mettre à jour le mapping SSRC → user_id (appelé par SpeakingStateUpdate)
@@ -304,6 +325,7 @@ impl RecordingSession {
             // C'est l'équivalent de Python : old = d; d = {}
             let buffers = std::mem::take(&mut inner.audio_buffers);
             let audio_offsets = std::mem::take(&mut inner.audio_start_offsets);
+            inner.last_audio_time.clear();
             let user_names = inner.user_names.clone();
 
             inner.batch_number += 1;
