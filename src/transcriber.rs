@@ -31,7 +31,10 @@ fn get_context() -> &'static WhisperContext {
 
         tracing::info!("Chargement du modèle Whisper depuis '{model_path}'...");
 
-        let ctx = WhisperContext::new_with_params(&model_path, WhisperContextParameters::default())
+        let mut ctx_params = WhisperContextParameters::default();
+        ctx_params.use_gpu(true);
+
+        let ctx = WhisperContext::new_with_params(&model_path, ctx_params)
             .expect("Impossible de charger le modèle Whisper — vérifie WHISPER_MODEL_PATH");
 
         tracing::info!("Modèle Whisper chargé.");
